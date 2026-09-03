@@ -1,0 +1,24 @@
+# Vivado derived directories
+*.cache/
+*.gen/
+*.hw/
+*.ip_user_files/
+*.runs/
+*.sim/
+.Xil/
+
+# Vivado temporary files and logs
+*.jou
+*.log
+*.str
+*.wdb
+dfx_runtime.txt
+
+# Generated implementation and export artifacts
+*.dcp
+*.bit
+*.bin
+*.mcs
+*.ltx
+*.xsa
+*.hwh
