@@ -43,3 +43,16 @@ GuardianLoop register IP.
 No UART, Ethernet, SD, QSPI, USB, AXI interconnect, GuardianLoop AXI-Lite IP,
 XDC, or PL user ports are enabled in this milestone. M_AXI_GP0 is enabled and
 clocked from FCLK0, but intentionally has no slave until the next milestone.
+
+## AXI-Lite register attachment
+
+The next milestone connects `processing_system7_0/M_AXI_GP0` through the
+single-master/single-slave `axi_smc_0` SmartConnect to
+`guardianloop_regs_v0_0/s_axi` (`guardianloop.org:user:guardianloop_regs_v0:1.0`).
+The SmartConnect and register IP use `FCLK_CLK0` (50 MHz) and
+`rst_ps7_0_50M/peripheral_aresetn`.
+
+Vivado Address Editor automatic assignment placed the IP segment
+`guardianloop_regs_v0_0/s_axi/reg0` at `0x4000_0000`, range `0x0000_1000`
+(4 KiB). This is a new automatic assignment, not an address copied from the
+vendor example.
