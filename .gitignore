@@ -22,3 +22,7 @@ dfx_runtime.txt
 *.ltx
 *.xsa
 *.hwh
+
+# Python bridge test artifacts
+__pycache__/
+*.py[cod]

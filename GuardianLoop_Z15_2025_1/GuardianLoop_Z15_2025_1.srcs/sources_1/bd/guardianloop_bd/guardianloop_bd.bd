@@ -288,6 +288,9 @@
           "PCW_EN_RST0_PORT": {
             "value": "1"
           },
+          "PCW_EN_UART0": {
+            "value": "1"
+          },
           "PCW_FCLK_CLK0_BUF": {
             "value": "TRUE"
           },
@@ -320,6 +323,9 @@
           },
           "PCW_PACKAGE_DDR_DQS_TO_CLK_DELAY_3": {
             "value": "-0.010"
+          },
+          "PCW_UART0_BAUD_RATE": {
+            "value": "115200"
           },
           "PCW_UIPARAM_ACT_DDR_FREQ_MHZ": {
             "value": "533.333374"

@@ -38,11 +38,27 @@ GuardianLoop register IP.
 - FCLK0: 50 MHz (`PCW_FPGA0_PERIPHERAL_FREQMHZ=50`, `PCW_EN_CLK0_PORT=1`).
 - FCLK_RESET0_N is enabled and used as the active-low external reset source of `proc_sys_reset`.
 
+## PS UART0 transport enablement
+
+EEG transport v0 enables the Zynq PS UART0 only, using the V1.1 bottom-board
+CH340E path.  This is PS MIO rather than a PL port and does not require an
+XDC:
+
+- `PCW_EN_UART0=1`
+- `PCW_UART0_UART0_IO={MIO 14 .. 15}`
+- `PCW_UART0_BAUD_RATE=115200`
+
+Board evidence is `ZYNQ7015_开发板底板原理图_1V1.pdf`, sheet 02
+(`PS_MIO14 → PS_UART_RX`, `PS_MIO15 → PS_UART_TX`) and sheet 07 (U19
+`CH340E`: `TXD → PS_RXD`, `RXD ← PS_TXD`).  The MIO14–15 selection is also a
+valid UART0 pair in the Vivado 2025.1 Zynq-7000 PS configuration data.
+
 ## Deliberately excluded
 
-No UART, Ethernet, SD, QSPI, USB, AXI interconnect, GuardianLoop AXI-Lite IP,
-XDC, or PL user ports are enabled in this milestone. M_AXI_GP0 is enabled and
-clocked from FCLK0, but intentionally has no slave until the next milestone.
+Ethernet, SD, QSPI, USB, XDC, and PL user ports remain disabled in this
+milestone.  UART0 is enabled only for the PS↔CH340 EEG transport.  M_AXI_GP0
+is enabled and clocked from FCLK0, with the AXI-Lite register attachment
+described below.
 
 ## AXI-Lite register attachment
 
