@@ -30,9 +30,23 @@ def main() -> int:
     parser.add_argument("--port", required=True, help="PC serial port connected to Z15 CH340")
     parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--frames", type=int, default=0, help="number of frames; 0 means continuous")
+    parser.add_argument(
+        "--chunk-bytes",
+        type=int,
+        default=0,
+        help="test mode: split each frame into chunks; 0 sends one complete frame",
+    )
+    parser.add_argument(
+        "--chunk-gap-ms",
+        type=float,
+        default=0.0,
+        help="test mode: delay between chunks in milliseconds",
+    )
     args = parser.parse_args()
     if args.frames < 0:
         raise SystemExit("--frames must be zero or positive")
+    if args.chunk_bytes < 0 or args.chunk_gap_ms < 0.0:
+        raise SystemExit("chunk size and gap must not be negative")
 
     try:
         import serial
@@ -49,8 +63,15 @@ def main() -> int:
             packet, clipped = encode_frame(
                 sequence, source_timestamp_ns, make_frame_samples(sample_index)
             )
-            uart.write(packet)
-            uart.flush()
+            if args.chunk_bytes == 0:
+                uart.write(packet)
+                uart.flush()
+            else:
+                for offset in range(0, len(packet), args.chunk_bytes):
+                    uart.write(packet[offset : offset + args.chunk_bytes])
+                    uart.flush()
+                    if args.chunk_gap_ms != 0.0:
+                        time.sleep(args.chunk_gap_ms / 1000.0)
             print(f"sent synthetic seq={sequence} bytes={len(packet)} clipped={clipped}")
             sequence = (sequence + 1) & 0xFFFFFFFF
             sample_index += SAMPLES_PER_FRAME

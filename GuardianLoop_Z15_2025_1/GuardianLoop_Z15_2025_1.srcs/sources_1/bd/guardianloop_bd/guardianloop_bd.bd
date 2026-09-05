@@ -1107,9 +1107,9 @@
           "guardianloop_regs_v0_0/s_axi_aclk",
           "axi_dma_0/s_axi_lite_aclk",
           "axi_dma_0/m_axi_mm2s_aclk",
-          "guardianloop_eeg_quality_v0_0/s_axi_aclk",
           "axi_smc_mem_0/aclk",
-          "processing_system7_0/S_AXI_HP0_ACLK"
+          "processing_system7_0/S_AXI_HP0_ACLK",
+          "guardianloop_eeg_quality_v0_0/s_axi_aclk"
         ]
       },
       "processing_system7_0_FCLK_RESET0_N": {
@@ -1124,8 +1124,8 @@
           "axi_smc_0/aresetn",
           "guardianloop_regs_v0_0/s_axi_aresetn",
           "axi_dma_0/axi_resetn",
-          "guardianloop_eeg_quality_v0_0/s_axi_aresetn",
-          "axi_smc_mem_0/aresetn"
+          "axi_smc_mem_0/aresetn",
+          "guardianloop_eeg_quality_v0_0/s_axi_aresetn"
         ]
       }
     },

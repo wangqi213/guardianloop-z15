@@ -105,6 +105,25 @@ module guardianloop_eeg_quality_v0_v1_0 #(
     reg [31:0] reason_code_reg;
     reg        result_ready_reg;
 
+    // Window finalisation is deliberately sequential.  The original design
+    // divided eight 48-bit sums in the same cycle that accepted TLAST.  That
+    // created an ~90 ns DMA-to-result combinational path at a 50 MHz clock.
+    reg        finalize_active_reg;
+    reg [3:0]  finalize_channel_reg;
+    reg [15:0] finalize_sample_count_reg;
+    reg [47:0] finalize_sum_abs [0:7];
+    reg [7:0]  finalize_valid_mask_reg;
+    reg [31:0] finalize_reason_reg;
+
+    // One unsigned 48-by-16 restoring divider, shared by all eight channels.
+    // It consumes 48 clocks per channel while S_AXIS_TREADY is low.
+    reg        divide_active_reg;
+    reg [5:0]  divide_count_reg;
+    reg [47:0] divide_dividend_reg;
+    reg [48:0] divide_remainder_reg;
+    reg [47:0] divide_quotient_reg;
+    reg [15:0] divide_denominator_reg;
+
     integer channel_index;
     integer read_channel_index;
     reg [15:0] next_sample_count;
@@ -112,11 +131,21 @@ module guardianloop_eeg_quality_v0_v1_0 #(
     reg [16:0] next_max_abs;
     reg [15:0] next_sat_count;
     reg [47:0] next_sum_abs;
-    reg [31:0] next_mean_abs;
-    reg [7:0]  next_channel_flags;
-    reg [7:0]  next_valid_mask;
-    reg [31:0] next_reason;
     reg        close_window;
+
+    reg [7:0]  finalized_channel_flags;
+    reg [7:0]  finalized_valid_mask;
+    reg [31:0] finalized_reason;
+
+    wire [48:0] divide_shifted_remainder =
+        {divide_remainder_reg[47:0], divide_dividend_reg[47]};
+    wire divide_subtract = divide_shifted_remainder >= {33'd0, divide_denominator_reg};
+    wire [48:0] divide_next_remainder = divide_subtract ?
+        (divide_shifted_remainder - {33'd0, divide_denominator_reg}) : divide_shifted_remainder;
+    wire [47:0] divide_next_quotient = {divide_quotient_reg[46:0], divide_subtract};
+    wire [16:0] stream_ch0_abs = s_axis_tdata[15] ?
+        {1'b0, (~s_axis_tdata[15:0]) + 16'd1} : {1'b0, s_axis_tdata[15:0]};
+    wire [47:0] stream_ch0_next_sum = work_sum_abs[0] + stream_ch0_abs;
 
     wire stream_accept = s_axis_tvalid && s_axis_tready;
     wire clear_result_write = awaddr_valid_reg && wdata_valid_reg && !bvalid_reg &&
@@ -132,7 +161,7 @@ module guardianloop_eeg_quality_v0_v1_0 #(
     assign s_axi_rdata   = rdata_reg;
 
     // Input is accepted only while the software has explicitly enabled capture.
-    assign s_axis_tready = s_axi_aresetn && capture_enable_reg;
+    assign s_axis_tready = s_axi_aresetn && capture_enable_reg && !finalize_active_reg;
     assign quality_valid = quality_valid_reg;
     assign valid_channel_mask = valid_channel_mask_reg;
     assign reason_code = reason_code_reg;
@@ -209,8 +238,9 @@ module guardianloop_eeg_quality_v0_v1_0 #(
         end
     end
 
-    // EEG window accumulator. Statistics are latched atomically when tlast or
-    // WINDOW_SAMPLES closes a window. No floating point is used.
+    // EEG window accumulator and sequential finaliser.  A completed window is
+    // frozen first; the shared divider then evaluates one channel over 48
+    // cycles.  This keeps every DMA stream-accept path to add/compare logic.
     always @(posedge s_axi_aclk) begin
         if (!s_axi_aresetn || clear_result_write) begin
             completed_samples_reg <= 16'd0;
@@ -219,82 +249,133 @@ module guardianloop_eeg_quality_v0_v1_0 #(
             valid_channel_mask_reg <= 8'd0;
             reason_code_reg <= 32'd0;
             result_ready_reg <= 1'b0;
+            finalize_active_reg <= 1'b0;
+            finalize_channel_reg <= 4'd0;
+            finalize_sample_count_reg <= 16'd0;
+            finalize_valid_mask_reg <= 8'd0;
+            finalize_reason_reg <= 32'd0;
+            divide_active_reg <= 1'b0;
+            divide_count_reg <= 6'd0;
+            divide_dividend_reg <= 48'd0;
+            divide_remainder_reg <= 49'd0;
+            divide_quotient_reg <= 48'd0;
+            divide_denominator_reg <= 16'd1;
             for (channel_index = 0; channel_index < 8; channel_index = channel_index + 1) begin
                 work_sample_count[channel_index] <= 16'd0;
                 work_max_abs[channel_index] <= 17'd0;
                 work_sat_count[channel_index] <= 16'd0;
                 work_sum_abs[channel_index] <= 48'd0;
+                finalize_sum_abs[channel_index] <= 48'd0;
                 result_sample_count[channel_index] <= 16'd0;
                 result_max_abs[channel_index] <= 17'd0;
                 result_sat_count[channel_index] <= 16'd0;
                 result_mean_abs[channel_index] <= 32'd0;
                 result_flags[channel_index] <= 8'd0;
             end
-        end else if (stream_accept) begin
-            // Every enabled channel receives exactly one value per time point.
-            next_sample_count = work_sample_count[0] + 16'd1;
-            close_window = s_axis_tlast || (window_samples_reg != 16'd0 && next_sample_count >= window_samples_reg);
-            next_valid_mask = 8'd0;
-            next_reason = 32'd0;
-            for (channel_index = 0; channel_index < 8; channel_index = channel_index + 1) begin
-                if (s_axis_tdata[channel_index*16 + 15])
-                    next_abs = {1'b0, (~s_axis_tdata[channel_index*16 +: 16]) + 16'd1};
-                else
-                    next_abs = {1'b0, s_axis_tdata[channel_index*16 +: 16]};
-                next_max_abs = (next_abs > work_max_abs[channel_index]) ? next_abs : work_max_abs[channel_index];
-                next_sat_count = work_sat_count[channel_index] +
-                    ((s_axis_tdata[channel_index*16 +: 16] == 16'h7FFF ||
-                      s_axis_tdata[channel_index*16 +: 16] == 16'h8000) ? 16'd1 : 16'd0);
-                next_sum_abs = work_sum_abs[channel_index] + next_abs;
-
-                if (close_window) begin
-                    next_mean_abs = next_sum_abs / next_sample_count;
-                    next_channel_flags = 8'd0;
-                    if (next_sample_count < min_samples_reg) begin
-                        next_channel_flags[4] = 1'b1;
-                        next_reason = next_reason | REASON_INSUFFICIENT;
+        end else begin
+            if (stream_accept) begin
+                next_sample_count = work_sample_count[0] + 16'd1;
+                close_window = s_axis_tlast ||
+                    (window_samples_reg != 16'd0 && next_sample_count >= window_samples_reg);
+                for (channel_index = 0; channel_index < 8; channel_index = channel_index + 1) begin
+                    if (s_axis_tdata[channel_index*16 + 15])
+                        next_abs = {1'b0, (~s_axis_tdata[channel_index*16 +: 16]) + 16'd1};
+                    else
+                        next_abs = {1'b0, s_axis_tdata[channel_index*16 +: 16]};
+                    next_max_abs = (next_abs > work_max_abs[channel_index]) ?
+                        next_abs : work_max_abs[channel_index];
+                    next_sat_count = work_sat_count[channel_index] +
+                        ((s_axis_tdata[channel_index*16 +: 16] == 16'h7FFF ||
+                          s_axis_tdata[channel_index*16 +: 16] == 16'h8000) ? 16'd1 : 16'd0);
+                    next_sum_abs = work_sum_abs[channel_index] + next_abs;
+                    if (close_window) begin
+                        result_sample_count[channel_index] <= next_sample_count;
+                        result_max_abs[channel_index] <= next_max_abs;
+                        result_sat_count[channel_index] <= next_sat_count;
+                        result_mean_abs[channel_index] <= 32'd0;
+                        result_flags[channel_index] <= 8'd0;
+                        finalize_sum_abs[channel_index] <= next_sum_abs;
+                        work_sample_count[channel_index] <= 16'd0;
+                        work_max_abs[channel_index] <= 17'd0;
+                        work_sat_count[channel_index] <= 16'd0;
+                        work_sum_abs[channel_index] <= 48'd0;
+                    end else begin
+                        work_sample_count[channel_index] <= next_sample_count;
+                        work_max_abs[channel_index] <= next_max_abs;
+                        work_sat_count[channel_index] <= next_sat_count;
+                        work_sum_abs[channel_index] <= next_sum_abs;
                     end
-                    if (abs_limit_enable_reg && next_max_abs > max_abs_reg) begin
-                        next_channel_flags[1] = 1'b1;
-                        next_reason = next_reason | REASON_ABS_LIMIT;
-                    end
-                    if (saturation_limit_enable_reg && next_sat_count > max_saturation_count_reg) begin
-                        next_channel_flags[2] = 1'b1;
-                        next_reason = next_reason | REASON_SATURATION;
-                    end
-                    if (mean_abs_limit_enable_reg && next_sum_abs > (max_mean_abs_reg * next_sample_count)) begin
-                        next_channel_flags[3] = 1'b1;
-                        next_reason = next_reason | REASON_MEAN_ABS;
-                    end
-                    if (next_channel_flags[4:1] == 4'd0) begin
-                        next_channel_flags[0] = 1'b1;
-                        next_valid_mask[channel_index] = 1'b1;
-                    end
-                    result_sample_count[channel_index] <= next_sample_count;
-                    result_max_abs[channel_index] <= next_max_abs;
-                    result_sat_count[channel_index] <= next_sat_count;
-                    result_mean_abs[channel_index] <= next_mean_abs;
-                    result_flags[channel_index] <= next_channel_flags;
-                    work_sample_count[channel_index] <= 16'd0;
-                    work_max_abs[channel_index] <= 17'd0;
-                    work_sat_count[channel_index] <= 16'd0;
-                    work_sum_abs[channel_index] <= 48'd0;
-                end else begin
-                    work_sample_count[channel_index] <= next_sample_count;
-                    work_max_abs[channel_index] <= next_max_abs;
-                    work_sat_count[channel_index] <= next_sat_count;
-                    work_sum_abs[channel_index] <= next_sum_abs;
                 end
-            end
-            if (close_window) begin
-                completed_samples_reg <= next_sample_count;
-                window_sequence_reg <= window_sequence_reg + 32'd1;
-                valid_channel_mask_reg <= next_valid_mask;
-                if ((next_valid_mask & required_valid_mask_reg) != required_valid_mask_reg)
-                    next_reason = next_reason | REASON_REQUIRED_CH;
-                reason_code_reg <= next_reason;
-                quality_valid_reg <= ((next_valid_mask & required_valid_mask_reg) == required_valid_mask_reg);
-                result_ready_reg <= 1'b1;
+                if (close_window) begin
+                    completed_samples_reg <= next_sample_count;
+                    window_sequence_reg <= window_sequence_reg + 32'd1;
+                    quality_valid_reg <= 1'b0;
+                    valid_channel_mask_reg <= 8'd0;
+                    reason_code_reg <= 32'd0;
+                    result_ready_reg <= 1'b0;
+                    finalize_active_reg <= 1'b1;
+                    finalize_channel_reg <= 4'd0;
+                    finalize_sample_count_reg <= next_sample_count;
+                    finalize_valid_mask_reg <= 8'd0;
+                    finalize_reason_reg <= 32'd0;
+                    divide_active_reg <= 1'b1;
+                    divide_count_reg <= 6'd0;
+                    divide_dividend_reg <= stream_ch0_next_sum;
+                    divide_remainder_reg <= 49'd0;
+                    divide_quotient_reg <= 48'd0;
+                    divide_denominator_reg <= (next_sample_count == 16'd0) ? 16'd1 : next_sample_count;
+                end
+            end else if (divide_active_reg) begin
+                divide_remainder_reg <= divide_next_remainder;
+                divide_dividend_reg <= {divide_dividend_reg[46:0], 1'b0};
+                divide_quotient_reg <= divide_next_quotient;
+                if (divide_count_reg == 6'd47) begin
+                    finalized_channel_flags = 8'd0;
+                    finalized_valid_mask = finalize_valid_mask_reg;
+                    finalized_reason = finalize_reason_reg;
+                    if (finalize_sample_count_reg < min_samples_reg) begin
+                        finalized_channel_flags[4] = 1'b1;
+                        finalized_reason = finalized_reason | REASON_INSUFFICIENT;
+                    end
+                    if (abs_limit_enable_reg && result_max_abs[finalize_channel_reg] > max_abs_reg) begin
+                        finalized_channel_flags[1] = 1'b1;
+                        finalized_reason = finalized_reason | REASON_ABS_LIMIT;
+                    end
+                    if (saturation_limit_enable_reg && result_sat_count[finalize_channel_reg] > max_saturation_count_reg) begin
+                        finalized_channel_flags[2] = 1'b1;
+                        finalized_reason = finalized_reason | REASON_SATURATION;
+                    end
+                    if (mean_abs_limit_enable_reg && divide_next_quotient[31:0] > max_mean_abs_reg) begin
+                        finalized_channel_flags[3] = 1'b1;
+                        finalized_reason = finalized_reason | REASON_MEAN_ABS;
+                    end
+                    if (finalized_channel_flags[4:1] == 4'd0) begin
+                        finalized_channel_flags[0] = 1'b1;
+                        finalized_valid_mask[finalize_channel_reg] = 1'b1;
+                    end
+                    result_mean_abs[finalize_channel_reg] <= divide_next_quotient[31:0];
+                    result_flags[finalize_channel_reg] <= finalized_channel_flags;
+                    finalize_valid_mask_reg <= finalized_valid_mask;
+                    finalize_reason_reg <= finalized_reason;
+                    if (finalize_channel_reg == 4'd7) begin
+                        if ((finalized_valid_mask & required_valid_mask_reg) != required_valid_mask_reg)
+                            finalized_reason = finalized_reason | REASON_REQUIRED_CH;
+                        valid_channel_mask_reg <= finalized_valid_mask;
+                        reason_code_reg <= finalized_reason;
+                        quality_valid_reg <= ((finalized_valid_mask & required_valid_mask_reg) == required_valid_mask_reg);
+                        result_ready_reg <= 1'b1;
+                        finalize_active_reg <= 1'b0;
+                        divide_active_reg <= 1'b0;
+                    end else begin
+                        finalize_channel_reg <= finalize_channel_reg + 4'd1;
+                        divide_count_reg <= 6'd0;
+                        divide_dividend_reg <= finalize_sum_abs[finalize_channel_reg + 4'd1];
+                        divide_remainder_reg <= 49'd0;
+                        divide_quotient_reg <= 48'd0;
+                    end
+                end else begin
+                    divide_count_reg <= divide_count_reg + 6'd1;
+                end
             end
         end
     end

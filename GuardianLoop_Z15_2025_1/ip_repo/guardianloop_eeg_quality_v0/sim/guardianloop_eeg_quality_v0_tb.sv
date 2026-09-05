@@ -142,6 +142,7 @@ module guardianloop_eeg_quality_v0_tb;
         clear_and_configure(32'h0000_000F);
         for (sample_index = 0; sample_index < 250; sample_index = sample_index + 1)
             send_point(16'sd10,16'sd20,16'sd30,16'sd40,16'sd50,16'sd60,16'sd70,16'sd80, sample_index == 249);
+        repeat (400) @(posedge s_axi_aclk); // eight channels × 48 divider cycles
         axi_read(STATUS, read_data); expect_equal(read_data, 32'h0000_0007, "normal result status");
         axi_read(VALID_MASK, read_data); expect_equal(read_data, 32'h0000_00FF, "normal valid mask");
         axi_read(REASON, read_data); expect_equal(read_data, 32'h0000_0000, "normal reason");
@@ -152,6 +153,7 @@ module guardianloop_eeg_quality_v0_tb;
         clear_and_configure(32'h0000_0007);
         for (sample_index = 0; sample_index < 250; sample_index = sample_index + 1)
             send_point(16'sd10,16'sd10,16'sd10,(sample_index == 7) ? 16'sh7FFF : 16'sd10,16'sd10,16'sd10,16'sd10,16'sd10, sample_index == 249);
+        repeat (400) @(posedge s_axi_aclk);
         axi_read(VALID_MASK, read_data); expect_equal(read_data, 32'h0000_00F7, "clipped channel mask");
         axi_read(REASON, read_data); expect_equal(read_data, 32'h0000_0016, "clipped channel reason");
 
@@ -159,6 +161,7 @@ module guardianloop_eeg_quality_v0_tb;
         clear_and_configure(32'h0000_0009);
         for (sample_index = 0; sample_index < 250; sample_index = sample_index + 1)
             send_point(16'sd10,16'sd10,16'sd10,16'sd10,16'sd10,16'sd200,16'sd10,16'sd10, sample_index == 249);
+        repeat (400) @(posedge s_axi_aclk);
         axi_read(VALID_MASK, read_data); expect_equal(read_data, 32'h0000_00DF, "DC-offset channel mask");
         axi_read(REASON, read_data); expect_equal(read_data, 32'h0000_0018, "DC-offset reason");
 
@@ -166,6 +169,7 @@ module guardianloop_eeg_quality_v0_tb;
         clear_and_configure(32'h0000_0001);
         for (sample_index = 0; sample_index < 20; sample_index = sample_index + 1)
             send_point(16'sd10,16'sd10,16'sd10,16'sd10,16'sd10,16'sd10,16'sd10,16'sd10, sample_index == 19);
+        repeat (400) @(posedge s_axi_aclk);
         axi_read(VALID_MASK, read_data); expect_equal(read_data, 32'h0000_0000, "insufficient window mask");
         axi_read(REASON, read_data); expect_equal(read_data, 32'h0000_0011, "insufficient window reason");
         axi_read(COMPLETED, read_data); expect_equal(read_data, 32'd20, "insufficient completed samples");
@@ -174,6 +178,7 @@ module guardianloop_eeg_quality_v0_tb;
         clear_and_configure(32'h0000_0003);
         for (sample_index = 0; sample_index < 250; sample_index = sample_index + 1)
             send_point(16'sd2000,16'sd2000,16'sd10,16'sd10,16'sd10,16'sd10,16'sd10,16'sd10, sample_index == 249);
+        repeat (400) @(posedge s_axi_aclk);
         axi_read(STATUS, read_data); expect_equal(read_data, 32'h0000_0005, "multi-failure status has valid=0");
         axi_read(VALID_MASK, read_data); expect_equal(read_data, 32'h0000_00FC, "multi-failure channel mask");
         axi_read(REASON, read_data); expect_equal(read_data, 32'h0000_0012, "multi-failure reason");
